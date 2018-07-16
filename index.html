@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Field of Vision</title>
+  <script src="//cdn.jsdelivr.net/npm/phaser-ce@2.10.5"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.1.1/socket.io.js"></script>
+  <style type="text/css">
+    body {
+      margin: 0
+    }
+  </style>
+  <script>
+    window.addEventListener("keydown", function (e) {
+      if (e.keyCode === 32) {
+        e.preventDefault()
+      }
+    }, false)
+  </script>
+</head>
+
+<body>
+
+  <script type="text/javascript">
+    var weapon
+    var bulletsInGun
+    var rounds = 0
+    var player
+    var flashlight
+    var fireButton
+    var otherPlayer
+    var map
+    var firing = false
+    var offset = 64
+    var playerSpeed = 3
+    var origin = {
+      x: 1280,
+      y: 800
+    }
+    var darkness
+    var WEAPONS
+    var batteryPowerText
+    var batteryPower = 100
+    var inventory = []
+
+    var game = new Phaser.Game(origin.x, origin.y, Phaser.CANVAS, 'field-of-vision',
+      { preload: preload, create: create, update: update })
+
+    function addPlayer(self, playerInfo) {
+      player = self.game.add.sprite(playerInfo.x, playerInfo.y, 'flashlight')
+      darkness = self.game.add.sprite(playerInfo.x, playerInfo.y, 'darkness100')
+      player.anchor.setTo(0.5, 0.5)
+      darkness.anchor.setTo(0.5, 0.5)
+      darkness.position.setTo(0, 0)
+      player.addChild(darkness)
+      // PLAYER COLOR
+      color = self.game.add.sprite(playerInfo.x, playerInfo.y, 'red')
+      color.anchor.setTo(0.5, 0.5)
+      color.position.setTo(0, 0)
+      player.addChild(color)
+      color.bringToTop()
+      game.camera.follow(player)
+      game.camera.deadzone = new Phaser.Rectangle(300, 300, 680, 200)
+      self.player = playerInfo
+      game.world.bringToTop(self.otherPlayers)
+      batteryPowerText.bringToTop()
+      batteryPowerText.setText(`Battery Power: ${batteryPower}%`)
+      self.player.inventory = []
+    }
+
+    function addOtherPlayers(self, playerInfo) {
+      otherPlayer = self.game.add.sprite(playerInfo.x, playerInfo.y, 'flashlight-red')
+      otherPlayer.anchor.setTo(0.5, 0.5)
+      otherPlayer.id = playerInfo.id
+      otherPlayer.name = playerInfo.name
+      self.otherPlayers.add(otherPlayer)
+      game.world.bringToTop(self.otherPlayers)
+    }
+
+    function addWeaponToMap(self, weapon) {
+      if (weapon.name === 'gun') {
+        console.log(weapon.position)
+        let gun = self.game.add.sprite(weapon.position.x, weapon.position.y, 'gun')
+        gun.bulletSpeed = weapon.bulletSpeed
+        gun.damage = weapon.damage
+        gun.anchor.setTo(0.5, 0.5)
+        self.weapons.add(gun)
+      }
+    }
+
+    function addBatteryToMap(self, battery) {
+      let newBattery = self.game.add.sprite(battery.position.x, battery.position.y, 'battery')
+      newBattery.strength = battery.strength
+      newBattery.anchor.setTo(0.5, 0.5)
+      self.batteries.add(newBattery)
+    }
+
+    function degToRad(degrees) {
+      return degrees * Math.PI / 180
+    }
+
+    function fireGun(self) {
+      if (inventory[0].bulletsInGun) {
+        let bullet = self.game.add.sprite(player.position.x, player.position.y, 'bullet')
+        bullet.anchor.setTo(0.5, 0.5)
+        bullet.angle = player.angle
+        bullet.speed = inventory[0].bulletSpeed
+        player.addChild(bullet)
+        game.world.bringToTop(bullet)
+        self.bullets.add(bullet)
+        if (inventory[0].bulletsInGun > 0) {
+          inventory[0].bulletsInGun -= 1
+          if (inventory[0].bulletsInGun === 0 && inventory[0].rounds === 0) {
+            weaponText.destroy()
+          } else {
+            weaponText.setText(`${inventory[0].bulletsInGun} bullets, ${Math.floor(inventory[0].rounds / 6)} clips`)
+          }
+
+          self.socket.emit('fireGun', {
+            id: self.player.id,
+            angle: player.angle,
+            position: {
+              x: player.position.x,
+              y: player.position.y
+            },
+            speed: bullet.speed,
+            damage: bullet.damage
+          })
+        }
+      }
+    }
+
+    function updateBattery() {
+      if (batteryPower > 0) {
+        batteryPower -= 1
+        batteryPowerText.setText(`Battery Power: ${batteryPower}%`)
+        if (batteryPower === 0) {
+          darkness.loadTexture('darkness-complete')
+        } else if (batteryPower === 75) {
+          darkness.loadTexture('darkness75')
+        } else if (batteryPower === 50) {
+          darkness.loadTexture('darkness50')
+        } else if (batteryPower === 25) {
+          darkness.loadTexture('darkness25')
+        }
+      }
+    }
+
+    function updateBullets(self, bullets) {
+      bullets.forEach(function (bullet) {
+        if (bullet.position.x < 0 || bullet.position.y < 0 ||
+          bullet.position.x > 2048 || bullet.position.y > 2048) {
+          bullet.destroy()
+        }
+
+        if (bullet.angle > 0) {
+          bullet.position.x -= bullet.speed * Math.cos(degToRad(bullet.angle))
+          bullet.position.y -= bullet.speed * Math.sin(degToRad(bullet.angle))
+        } else {
+          bullet.position.x -= bullet.speed * Math.cos(degToRad(Math.abs(bullet.angle)))
+          bullet.position.y += bullet.speed * Math.sin(degToRad(Math.abs(bullet.angle)))
+        }
+
+        self.otherPlayers.children.forEach(function (otherPlayer) {
+          if (Math.abs(otherPlayer.position.x - bullet.position.x) < 20 &&
+            Math.abs(otherPlayer.position.y - bullet.position.y) < 20) {
+            bullet.destroy()
+            otherPlayer.destroy()
+            self.socket.emit('killPlayer', {
+              id: otherPlayer.id
+            })
+          }
+        })
+      })
+    }
+
+    function updateDarkness() {
+      if (batteryPower > 75) {
+        darkness.loadTexture('darkness100')
+      } else if (batteryPower > 50) {
+        darkness.loadTexture('darkness75')
+      } else if (batteryPower > 25) {
+        darkness.loadTexture('darkness50')
+      } else if (darkness > 0) {
+        darkness.loadTexture('darkness25')
+      } else {
+        darkness.loadTexture('darkness-complete')
+      }
+    }
+
+    function preload() {
+      const self = this
+      game.load.image('alpha-flashlight', 'assets/alpha-flashlight.png')
+      game.load.image('flashlight-red', 'assets/flashlight-red.png')
+      game.load.image('flashlight', 'assets/flashlight.png')
+      game.load.image('darkness100', 'assets/darkness100.png')
+      game.load.image('darkness75', 'assets/darkness75.png')
+      game.load.image('darkness50', 'assets/darkness50.png')
+      game.load.image('darkness25', 'assets/darkness25.png')
+      game.load.image('darkness-complete', 'assets/darkness-complete.png')
+      game.load.image('map', 'assets/map1.png')
+      game.load.image('red', 'assets/red-square.png')
+      game.load.image('battery', 'assets/battery.png')
+      game.load.image('bullet', 'assets/bullet.png')
+      game.load.image('gun', 'assets/gun.png')
+    }
+
+    function create() {
+      const self = this
+      game.add.tileSprite(0, 0, 2048, 2048, 'map')
+      game.world.setBounds(0, 0, 2048, 2048)
+
+      // BEGIN SOCKETS ///////////////////////
+
+      this.socket = io()
+      this.otherPlayers = this.add.group()
+      this.batteries = this.add.group()
+      this.weapons = this.add.group()
+      this.bullets = this.add.group()
+      this.enemyBullets = this.add.group()
+
+      batteryPowerText = game.add.text(200, 500, ``, { font: "32px Arial", fill: "#ffffff", align: "center" })
+      batteryPowerText.fixedToCamera = true
+      batteryPowerText.cameraOffset.setTo(100, 100)
+
+      game.time.events.loop(Phaser.Timer.SECOND, updateBattery, this)
+
+
+      this.socket.on('killPlayerEmit', deadPlayer => {
+        if (self.player.id === deadPlayer.id) {
+          console.log('You have been hit!')
+        }
+      })
+
+      this.socket.on('currentPlayers', players => {
+        Object.keys(players).forEach(id => {
+          if (players[id].id === self.socket.id) {
+            addPlayer(self, players[id])
+          } else {
+            addOtherPlayers(self, players[id])
+          }
+        })
+      })
+
+      this.socket.on('destroy-server-weapon', destroyedWeapon => {
+        self.weapons.children.forEach(function (weapon) {
+          if (destroyedWeapon.position.x === weapon.position.x &&
+            destroyedWeapon.position.y === weapon.position.y) {
+            weapon.destroy()
+          }
+        })
+      })
+
+      this.socket.on('destroy-server-battery', destroyedBattery => {
+        self.batteries.children.forEach(function (battery) {
+          if (destroyedBattery.position.x === battery.position.x &&
+            destroyedBattery.position.y === battery.position.y) {
+            battery.destroy()
+          }
+        })
+      })
+
+      this.socket.on('weapons', weapons => {
+        weapons.forEach(weapon => {
+          addWeaponToMap(self, weapon)
+        })
+      })
+
+      this.socket.on('batteries', batteries => {
+        batteries.forEach(battery => {
+          addBatteryToMap(self, battery)
+        })
+      })
+
+      this.socket.on('newPlayer', playerInfo => {
+        addOtherPlayers(self, playerInfo)
+      })
+
+      this.socket.on('disconnect', playerId => {
+        this.otherPlayers.children.forEach(otherPlayer => {
+          if (playerId === otherPlayer.id) {
+            otherPlayer.destroy()
+          }
+        })
+      })
+
+      this.socket.on('bulletEmit', function (bullet) {
+        let enemyBullet = self.game.add.sprite(bullet.position.x, bullet.position.y, 'bullet')
+        enemyBullet.anchor.setTo(0.5, 0.5)
+        enemyBullet.id = bullet.id
+        enemyBullet.angle = bullet.angle
+        enemyBullet.speed = bullet.speed
+      })
+
+      this.socket.on('rotateEmit', function (data) {
+        self.otherPlayers.children.forEach(function (otherPlayer) {
+          if (otherPlayer.id === data.id) {
+            otherPlayer.angle = data.angle
+          }
+        })
+      })
+
+      this.socket.on('moveUpEmit', function (data) {
+        self.otherPlayers.children.forEach(function (otherPlayer) {
+          if (otherPlayer.id === data.id) {
+            otherPlayer.position.x = data.x
+            otherPlayer.position.y = data.y
+          }
+        })
+      })
+
+      this.socket.on('moveDownEmit', function (data) {
+        self.otherPlayers.children.forEach(function (otherPlayer) {
+          if (otherPlayer.id === data.id) {
+            otherPlayer.position.x = data.x
+            otherPlayer.position.y = data.y
+          }
+        })
+      })
+
+      this.socket.on('moveLeftEmit', function (data) {
+        self.otherPlayers.children.forEach(function (otherPlayer) {
+          if (otherPlayer.id === data.id) {
+            otherPlayer.position.x = data.x
+            otherPlayer.position.y = data.y
+          }
+        })
+      })
+
+      this.socket.on('moveRightEmit', function (data) {
+        self.otherPlayers.children.forEach(function (otherPlayer) {
+          if (otherPlayer.id === data.id) {
+            otherPlayer.position.x = data.x
+            otherPlayer.position.y = data.y
+          }
+        })
+      })
+      // END SOCKETS /////////////////////////////////////////////////
+    }
+
+    function update() {
+      var self = this
+      if (player) {
+        // ROTATE
+        let yDist = player.worldPosition.x - game.input.mousePointer.x
+        let xDist = player.worldPosition.y - game.input.mousePointer.y
+        if (yDist > 0) {
+          player.angle = Math.atan(xDist / yDist) * 180 / Math.PI
+        } else {
+          player.angle = 180 + Math.atan(xDist / yDist) * 180 / Math.PI
+        }
+
+        if (player.angle) {
+          this.socket.emit('rotate', {
+            id: self.player.id,
+            angle: player.angle
+          })
+        }
+        // BATTERY PICKUP
+        this.batteries.forEach(function (battery) {
+          if (Math.abs(player.position.x - battery.position.x) < 20 &&
+            Math.abs(player.position.y - battery.position.y) < 20) {
+
+            if (batteryPower + battery.strength < 100) {
+              batteryPower += battery.strength
+            } else {
+              batteryPower = 100
+            }
+
+            updateDarkness()
+
+            batteryPowerText.setText(`Battery Power: ${batteryPower}%`)
+
+            self.socket.emit('destroy-battery', {
+              position: {
+                x: battery.position.x,
+                y: battery.position.y
+              }
+            })
+            battery.destroy()
+          }
+        })
+
+        // WEAPON PICKUP
+        this.weapons.forEach(function (weapon) {
+          if (Math.abs(player.position.x - weapon.position.x) < 20 &&
+            Math.abs(player.position.y - weapon.position.y) < 20) {
+            if (weapon.key === 'gun')
+              inventory.push({
+                name: 'gun',
+                damage: weapon.damage,
+                bulletSpeed: weapon.bulletSpeed,
+                rounds: Math.floor(Math.random() * 25)
+              })
+            inventory[0].bulletsInGun = inventory[0].rounds % 6
+            inventory[0].rounds -= inventory[0].bulletsInGun
+
+            weaponText = game.add.text(200, 500,
+              `${inventory[0].bulletsInGun} bullets, ${Math.floor(inventory[0].rounds / 6)} clips`,
+              { font: "32px Arial", fill: "#ffffff", align: "center" })
+            weaponText.fixedToCamera = true
+            weaponText.cameraOffset.setTo(100, 50)
+
+            self.socket.emit('destroy-weapon', {
+              position: {
+                x: weapon.position.x,
+                y: weapon.position.y
+              }
+            })
+            weapon.destroy()
+          }
+        })
+
+        // BULLET TRAVEL
+        if (self.bullets.children.length) {
+          bullets = self.bullets.children
+          updateBullets(self, bullets)
+        }
+
+        if (self.enemyBullets.children.length) {
+          bullets = self.enemyBullets.children
+          updateBullets(self, bullets)
+        }
+      }
+
+      if (game.input.keyboard.isDown(Phaser.Keyboard.W) && player.position.y > 0) {
+        player.position.y -= playerSpeed
+        this.socket.emit('moveUp', {
+          id: self.player.id,
+          position: player.position
+        })
+      }
+
+      if (game.input.keyboard.isDown(Phaser.Keyboard.S) && player.position.y < 2048) {
+        player.position.y += playerSpeed
+        this.socket.emit('moveDown', {
+          id: self.player.id,
+          position: player.position
+        })
+      }
+
+      if (game.input.keyboard.isDown(Phaser.Keyboard.A) && player.position.x > 0) {
+        player.position.x -= playerSpeed
+        this.socket.emit('moveLeft', {
+          id: self.player.id,
+          position: player.position
+        })
+      }
+
+      if (game.input.keyboard.isDown(Phaser.Keyboard.D) && player.position.x < 2048) {
+        player.position.x += playerSpeed
+        this.socket.emit('moveRight', {
+          id: self.player.id,
+          position: player.position
+        })
+      }
+
+      // USE WEAPON
+      if (game.input.keyboard.justPressed(Phaser.Keyboard.SPACEBAR)) {
+        let currentWeapon = ''
+        if (inventory.length) { currentWeapon = inventory[0] }
+        if (currentWeapon.name === 'gun') { fireGun(self) }
+      }
+
+      if (game.input.keyboard.justPressed(Phaser.Keyboard.R)) {
+        if (inventory[0] && inventory[0].name === 'gun') {
+          if (inventory[0].rounds >= 6) {
+            inventory[0].rounds -= (6 - inventory[0].bulletsInGun)
+            inventory[0].bulletsInGun = 6
+          } else {
+            bulletsInGun = rounds
+            inventory[0].rounds -= inventory[0].bulletsInGun
+          }
+          weaponText.setText(`${inventory[0].bulletsInGun} bullets, ${Math.floor(inventory[0].rounds / 6)} clips`)
+        }
+      }
+    }
+  </script>
+
+</body>
+
+</html>
